@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voice-diary"
+version = "0.1.0"
+description = "Privacy-first voice memo transcription and diary editing API"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "python-multipart>=0.0.20,<1",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "accelerate>=1.10,<2",
+  "qwen-asr>=0.0.6,<1",
+  "safetensors>=0.6,<1",
+  "transformers>=4.57,<6",
+]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+voice-diary = "voice_diary.client:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_diary"]
+
+[tool.hatch.build]
+include = ["src/voice_diary/prompts/*.txt"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

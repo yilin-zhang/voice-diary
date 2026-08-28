@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.voice-diary-output/
+voice-memos/
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.ogg
