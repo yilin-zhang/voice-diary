@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .config import Settings
 from .models import FakeBackend, ModelManager, ModelsNotReady, QwenBackend
@@ -157,6 +157,28 @@ def create_app(
     )
     async def rewrite(request: RewriteRequest) -> RewriteResult:
         return await run_rewrite(request)
+
+    @api.post(
+        "/v1/rewrite-stream",
+        dependencies=[Depends(authorize)],
+    )
+    async def rewrite_stream(request: RewriteRequest) -> StreamingResponse:
+        async def events():  # type: ignore[no-untyped-def]
+            task = asyncio.create_task(run_rewrite(request))
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(task), timeout=10)
+                except TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield f"data: {result.model_dump_json()}\n\n"
+                return
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
+        )
 
     @api.post(
         "/v1/process",

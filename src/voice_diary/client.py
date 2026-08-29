@@ -140,14 +140,18 @@ def _rewrite(
     date: str | None,
     title_hint: str | None,
 ) -> dict[str, Any]:
-    response = client.post(
-        f"{base_url}/v1/rewrite",
+    with client.stream(
+        "POST",
+        f"{base_url}/v1/rewrite-stream",
         headers=headers,
         json={"transcript": transcript, "date": date, "title_hint": title_hint},
         timeout=330,
-    )
-    response.raise_for_status()
-    return response.json()
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if line.startswith("data: "):
+                return json.loads(line.removeprefix("data: "))
+    raise ClientError("rewrite stream ended without a result")
 
 
 def process_file(
@@ -185,6 +189,14 @@ def process_file(
                 transcripts.append(result)
 
             full_transcript = "\n".join(item["text"].strip() for item in transcripts).strip()
+            (output_dir / "raw_transcript.json").write_text(
+                json.dumps(
+                    {"source": audio.name, "chunks": transcripts, "text": full_transcript},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             rewrite = _rewrite(
                 client,
                 base_url,
@@ -194,14 +206,6 @@ def process_file(
                 title_hint=title_hint,
             )
 
-    (output_dir / "raw_transcript.json").write_text(
-        json.dumps(
-            {"source": audio.name, "chunks": transcripts, "text": full_transcript},
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
     (output_dir / "cleaned_transcript.md").write_text(
         rewrite["cleaned_transcript"].rstrip() + "\n", encoding="utf-8"
     )

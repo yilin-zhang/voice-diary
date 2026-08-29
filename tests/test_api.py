@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -36,6 +37,22 @@ def test_ping_and_rewrite(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["cleaned_transcript"] == "今天散步了。"
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_streaming_rewrite_returns_sse_result(tmp_path: Path) -> None:
+    app = create_app(
+        settings=Settings(temp_dir=tmp_path),
+        manager=ready_manager(),
+        start_loader=False,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/rewrite-stream",
+            json={"transcript": "嗯，今天散步了。", "date": "2026-08-28"},
+        )
+    assert response.status_code == 200
+    event = next(line for line in response.text.splitlines() if line.startswith("data: "))
+    assert json.loads(event.removeprefix("data: "))["cleaned_transcript"] == "今天散步了。"
 
 
 def test_transcribe_unlinks_private_upload(tmp_path: Path) -> None:
