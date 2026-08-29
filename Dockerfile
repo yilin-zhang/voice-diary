@@ -5,7 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=5000 \
     PORT_HEALTH=5000 \
-    HF_HOME=/models/huggingface \
+    HF_HOME=/runpod-volume/huggingface-cache \
+    HF_HUB_OFFLINE=1 \
     VOICE_DIARY_TEMP_DIR=/dev/shm/voice-diary
 
 WORKDIR /app
@@ -17,7 +18,10 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN python -m pip install --no-cache-dir ".[gpu]"
+RUN python -m pip install --no-cache-dir --ignore-installed \
+      "blinker>=1.9" \
+      "cryptography>=46" \
+    && python -m pip install --no-cache-dir ".[gpu]"
 
 EXPOSE 5000
 
