@@ -50,7 +50,7 @@ def wait_until_ready(
 def _split_audio(source: Path, destination: Path, seconds: int) -> list[Path]:
     if shutil.which("ffmpeg") is None:
         raise ClientError("ffmpeg is required to split large audio files")
-    pattern = destination / "chunk-%05d.m4a"
+    pattern = destination / "chunk-%05d.flac"
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -64,9 +64,7 @@ def _split_audio(source: Path, destination: Path, seconds: int) -> list[Path]:
         "-ar",
         "16000",
         "-c:a",
-        "aac",
-        "-b:a",
-        "48k",
+        "flac",
         "-f",
         "segment",
         "-segment_time",
@@ -78,7 +76,7 @@ def _split_audio(source: Path, destination: Path, seconds: int) -> list[Path]:
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise ClientError("ffmpeg could not split the audio")
-    chunks = sorted(destination.glob("chunk-*.m4a"))
+    chunks = sorted(destination.glob("chunk-*.flac"))
     if not chunks:
         raise ClientError("ffmpeg produced no audio chunks")
     return chunks

@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+import time
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Protocol
@@ -61,6 +62,11 @@ def _timestamps(value: Any) -> list[dict[str, Any]]:
     return serialized
 
 
+def _editor_token_budget(transcript_tokens: int, cap: int) -> int:
+    """Allow room for cleaned text plus the diary without always using the full cap."""
+    return min(cap, max(512, transcript_tokens * 2 + 256))
+
+
 class FakeBackend:
     """Deterministic backend for local API and privacy tests. Never deploy as production."""
 
@@ -107,7 +113,7 @@ class QwenBackend:
         self._processor = AutoTokenizer.from_pretrained(self.settings.editor_model)
         self._editor = AutoModelForCausalLM.from_pretrained(
             self.settings.editor_model,
-            torch_dtype="auto",
+            dtype="auto",
             device_map="auto",
             low_cpu_mem_usage=True,
         )
@@ -142,14 +148,30 @@ class QwenBackend:
             messages,
             add_generation_prompt=True,
             tokenize=False,
+            enable_thinking=False,
         )
         inputs = self._processor([formatted], return_tensors="pt").to(self._editor.device)
+        transcript_tokens = len(
+            self._processor.encode(transcript, add_special_tokens=False)
+        )
+        max_new_tokens = _editor_token_budget(
+            transcript_tokens,
+            self.settings.max_editor_tokens,
+        )
+        started = time.monotonic()
         output = self._editor.generate(
             **inputs,
-            max_new_tokens=self.settings.max_editor_tokens,
+            max_new_tokens=max_new_tokens,
             do_sample=False,
         )
         generated = output[0][inputs["input_ids"].shape[-1] :]
+        logger.info(
+            "editor_complete input_tokens=%s output_tokens=%s max_new_tokens=%s elapsed_ms=%s",
+            transcript_tokens,
+            generated.shape[-1],
+            max_new_tokens,
+            round((time.monotonic() - started) * 1000),
+        )
         text = self._processor.decode(generated, skip_special_tokens=True)
         payload = _json_object(text)
         try:

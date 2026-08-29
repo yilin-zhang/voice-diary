@@ -1,9 +1,29 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from voice_diary import client as client_module
+
+
+def test_split_audio_outputs_asr_compatible_flac(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "memo.m4a"
+    source.write_bytes(b"input")
+    seen_command: list[str] = []
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        seen_command.extend(command)
+        Path(command[-1].replace("%05d", "00000")).write_bytes(b"flac")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(client_module.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(client_module.subprocess, "run", fake_run)
+
+    chunks = client_module._split_audio(source, tmp_path, 600)
+
+    assert [chunk.suffix for chunk in chunks] == [".flac"]
+    assert seen_command[seen_command.index("-c:a") + 1] == "flac"
 
 
 def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

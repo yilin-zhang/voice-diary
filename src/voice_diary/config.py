@@ -24,7 +24,7 @@ def _default_temp_dir() -> Path:
 class Settings:
     asr_model: str = "Qwen/Qwen3-ASR-1.7B"
     aligner_model: str | None = "Qwen/Qwen3-ForcedAligner-0.6B"
-    editor_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
+    editor_model: str = "Qwen/Qwen3-14B-FP8"
     max_upload_bytes: int = 28 * 1024 * 1024
     max_editor_tokens: int = 8192
     temp_dir: Path = _default_temp_dir()
@@ -40,7 +40,7 @@ class Settings:
             asr_model=os.getenv("VOICE_DIARY_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B"),
             aligner_model=aligner or None,
             editor_model=os.getenv(
-                "VOICE_DIARY_EDITOR_MODEL", "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"
+                "VOICE_DIARY_EDITOR_MODEL", "Qwen/Qwen3-14B-FP8"
             ),
             max_upload_bytes=int(
                 os.getenv("VOICE_DIARY_MAX_UPLOAD_BYTES", str(28 * 1024 * 1024))

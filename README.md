@@ -75,14 +75,14 @@ Production defaults:
 
 - ASR: `Qwen/Qwen3-ASR-1.7B`
 - timestamps: `Qwen/Qwen3-ForcedAligner-0.6B`
-- editor: `Qwen/Qwen3-30B-A3B-Instruct-2507-FP8`
+- editor: `Qwen/Qwen3-14B-FP8` with thinking disabled
 - upload ceiling: 28 MiB (below Runpod's 30 MB load-balancer limit)
 - port and health port: `5000`
 
-Runpod endpoint configuration should use an 80 GB GPU pool initially, one request per
+Runpod endpoint configuration should use a 24 GB Ada GPU pool, one request per
 worker, `workersMin=0`, `workersMax=1`, `endpointType=LOAD_BALANCER`, no network volume,
 `flashboot=OFF`, and a short idle timeout. Validate actual VRAM usage before trying a 48 GB
-pool.
+or larger editor model.
 
 ## Required verification before real data
 
