@@ -22,7 +22,7 @@ RUN python -m pip install --no-cache-dir --ignore-installed \
       "blinker>=1.9" \
       "cryptography>=46" \
     && python -m pip install --no-cache-dir ".[gpu]" \
-    && python -m pip install --no-cache-dir --no-deps --force-reinstall \
+    && python -m pip install --no-cache-dir --force-reinstall \
       "transformers @ git+https://github.com/huggingface/transformers.git@805a9e939fa8c1bff8d8ffdf041c051b71a914aa" \
     && python -c "from qwen_asr import Qwen3ASRModel; from transformers import AutoModelForMultimodalLM, AutoProcessor"
 
