@@ -33,14 +33,14 @@ def test_runpod_api_key_handles_missing_or_invalid_config(
     assert client_module._runpod_api_key(invalid) is None
 
 
-def test_split_audio_outputs_asr_compatible_flac(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_split_audio_outputs_asr_compatible_wav(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "memo.m4a"
     source.write_bytes(b"input")
     seen_command: list[str] = []
 
     def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
         seen_command.extend(command)
-        Path(command[-1].replace("%05d", "00000")).write_bytes(b"flac")
+        Path(command[-1].replace("%05d", "00000")).write_bytes(b"wav")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(client_module.shutil, "which", lambda name: "/usr/bin/ffmpeg")
@@ -48,8 +48,9 @@ def test_split_audio_outputs_asr_compatible_flac(tmp_path: Path, monkeypatch) ->
 
     chunks = client_module._split_audio(source, tmp_path, 600)
 
-    assert [chunk.suffix for chunk in chunks] == [".flac"]
-    assert seen_command[seen_command.index("-c:a") + 1] == "flac"
+    assert [chunk.suffix for chunk in chunks] == [".wav"]
+    assert seen_command[seen_command.index("-c:a") + 1] == "pcm_s16le"
+    assert seen_command[seen_command.index("-segment_format") + 1] == "wav"
 
 
 def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
