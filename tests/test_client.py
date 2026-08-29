@@ -7,6 +7,32 @@ from pathlib import Path
 from voice_diary import client as client_module
 
 
+def test_runpod_api_key_prefers_environment(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = tmp_path / "config.toml"
+    config.write_text('[default]\napi_key = "from-file"\n', encoding="utf-8")
+    monkeypatch.setenv("RUNPOD_API_KEY", "from-environment")
+
+    assert client_module._runpod_api_key(config) == "from-environment"
+
+
+def test_runpod_api_key_reads_default_profile(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    config = tmp_path / "config.toml"
+    config.write_text('[default]\napi_key = "from-file"\n', encoding="utf-8")
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+
+    assert client_module._runpod_api_key(config) == "from-file"
+
+
+def test_runpod_api_key_handles_missing_or_invalid_config(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    assert client_module._runpod_api_key(tmp_path / "missing.toml") is None
+    invalid = tmp_path / "invalid.toml"
+    invalid.write_text("not = [valid", encoding="utf-8")
+    assert client_module._runpod_api_key(invalid) is None
+
+
 def test_split_audio_outputs_asr_compatible_flac(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "memo.m4a"
     source.write_bytes(b"input")

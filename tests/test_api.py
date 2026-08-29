@@ -10,6 +10,11 @@ from voice_diary.config import Settings
 from voice_diary.models import FakeBackend, ModelManager
 
 
+def test_forced_aligner_is_opt_in(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("VOICE_DIARY_ALIGNER_MODEL", raising=False)
+    assert Settings.from_env().aligner_model is None
+
+
 def ready_manager(backend=None) -> ModelManager:
     manager = ModelManager(backend or FakeBackend())
     manager.load()

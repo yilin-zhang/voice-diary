@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,30 @@ import httpx
 
 class ClientError(RuntimeError):
     pass
+
+
+def _runpod_api_key(config_path: Path | None = None) -> str | None:
+    environment_key = os.getenv("RUNPOD_API_KEY", "").strip()
+    if environment_key:
+        return environment_key
+
+    path = config_path or Path.home() / ".runpod" / "config.toml"
+    try:
+        config = tomllib.loads(path.read_text("utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    profile_name = os.getenv("RUNPOD_PROFILE", "default")
+    profile = config.get(profile_name, {})
+    candidates = [
+        profile.get("api_key") if isinstance(profile, dict) else None,
+        config.get("api_key"),
+        config.get("apikey"),
+    ]
+    return next(
+        (value.strip() for value in candidates if isinstance(value, str) and value.strip()),
+        None,
+    )
 
 
 def _headers(api_key: str, app_token: str | None) -> dict[str, str]:
@@ -207,16 +232,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", default="Chinese")
     parser.add_argument("--date")
     parser.add_argument("--title")
-    parser.add_argument("--chunk-seconds", type=int, default=600)
+    parser.add_argument("--chunk-seconds", type=int, default=60)
     parser.add_argument("--output", type=Path, default=Path(".voice-diary-output"))
     return parser
 
 
 def main() -> None:
     args = _parser().parse_args()
-    api_key = os.getenv("RUNPOD_API_KEY")
+    api_key = _runpod_api_key()
     if not api_key:
-        sys.exit("RUNPOD_API_KEY is required")
+        sys.exit("Runpod API key not found; run `runpodctl doctor` or set RUNPOD_API_KEY")
     if not args.endpoint:
         sys.exit("--endpoint or VOICE_DIARY_ENDPOINT_URL is required")
     try:

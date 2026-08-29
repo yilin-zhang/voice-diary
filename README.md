@@ -49,7 +49,6 @@ The client always normalizes and chunks the memo locally with `ffmpeg`. It then 
 `/v1/transcribe` for each chunk and `/v1/rewrite` once for the combined transcript.
 
 ```bash
-export RUNPOD_API_KEY="..."              # restricted key; never commit it
 export VOICE_DIARY_ENDPOINT_URL="https://ENDPOINT_ID.api.runpod.ai"
 export VOICE_DIARY_APP_TOKEN="..."       # optional second factor
 
@@ -57,6 +56,10 @@ uv run voice-diary path/to/memo.m4a \
   --date 2026-08-28 \
   --title "今天的记录"
 ```
+
+The client uses `RUNPOD_API_KEY` when set; otherwise it reads the selected
+`RUNPOD_PROFILE` (default: `default`) from `~/.runpod/config.toml`. The key is never
+written to output files or logs.
 
 Results are written under `.voice-diary-output/`:
 

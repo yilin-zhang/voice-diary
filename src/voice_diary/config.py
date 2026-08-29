@@ -23,7 +23,7 @@ def _default_temp_dir() -> Path:
 @dataclass(frozen=True, slots=True)
 class Settings:
     asr_model: str = "Qwen/Qwen3-ASR-1.7B"
-    aligner_model: str | None = "Qwen/Qwen3-ForcedAligner-0.6B"
+    aligner_model: str | None = None
     editor_model: str = "Qwen/Qwen3-14B-FP8"
     max_upload_bytes: int = 28 * 1024 * 1024
     max_editor_tokens: int = 8192
@@ -33,9 +33,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        aligner = os.getenv(
-            "VOICE_DIARY_ALIGNER_MODEL", "Qwen/Qwen3-ForcedAligner-0.6B"
-        ).strip()
+        aligner = os.getenv("VOICE_DIARY_ALIGNER_MODEL", "").strip()
         return cls(
             asr_model=os.getenv("VOICE_DIARY_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B"),
             aligner_model=aligner or None,
