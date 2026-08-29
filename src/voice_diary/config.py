@@ -37,12 +37,8 @@ class Settings:
         return cls(
             asr_model=os.getenv("VOICE_DIARY_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B"),
             aligner_model=aligner or None,
-            editor_model=os.getenv(
-                "VOICE_DIARY_EDITOR_MODEL", "Qwen/Qwen3-14B-FP8"
-            ),
-            max_upload_bytes=int(
-                os.getenv("VOICE_DIARY_MAX_UPLOAD_BYTES", str(28 * 1024 * 1024))
-            ),
+            editor_model=os.getenv("VOICE_DIARY_EDITOR_MODEL", "Qwen/Qwen3-14B-FP8"),
+            max_upload_bytes=int(os.getenv("VOICE_DIARY_MAX_UPLOAD_BYTES", str(28 * 1024 * 1024))),
             max_editor_tokens=int(os.getenv("VOICE_DIARY_MAX_EDITOR_TOKENS", "8192")),
             temp_dir=Path(os.getenv("VOICE_DIARY_TEMP_DIR", str(_default_temp_dir()))),
             app_token=os.getenv("VOICE_DIARY_APP_TOKEN") or None,

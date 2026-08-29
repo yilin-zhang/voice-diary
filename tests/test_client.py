@@ -23,9 +23,7 @@ def test_runpod_api_key_reads_default_profile(tmp_path: Path, monkeypatch) -> No
     assert client_module._runpod_api_key(config) == "from-file"
 
 
-def test_runpod_api_key_handles_missing_or_invalid_config(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_runpod_api_key_handles_missing_or_invalid_config(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     assert client_module._runpod_api_key(tmp_path / "missing.toml") is None
     invalid = tmp_path / "invalid.toml"
@@ -100,3 +98,46 @@ def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> No
     assert "not-written-to-disk" not in "".join(
         path.read_text("utf-8") for path in output.iterdir()
     )
+
+
+def test_process_file_reuses_unfinished_transcript(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    audio = tmp_path / "memo.m4a"
+    audio.write_bytes(b"not-real-audio")
+    output_root = tmp_path / "output"
+    checkpoint = output_root / "memo-20260828-120000"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "raw_transcript.json").write_text(
+        json.dumps({"source": "memo.m4a", "chunks": [], "text": "已完成的转录"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(client_module, "wait_until_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        client_module,
+        "_split_audio",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ASR reran")),
+    )
+    monkeypatch.setattr(
+        client_module,
+        "_rewrite",
+        lambda *args, **kwargs: {
+            "cleaned_transcript": "已完成的转录",
+            "diary": "# 日记\n\n已完成的转录",
+            "uncertainties": [],
+        },
+    )
+
+    output = client_module.process_file(
+        audio,
+        endpoint_url="https://example.invalid",
+        api_key="secret",
+        app_token=None,
+        output_root=output_root,
+        language="Chinese",
+        date=None,
+        title_hint=None,
+        chunk_seconds=60,
+    )
+
+    assert output == checkpoint
+    assert (output / "diary.md").exists()

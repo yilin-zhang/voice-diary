@@ -140,18 +140,41 @@ def _rewrite(
     date: str | None,
     title_hint: str | None,
 ) -> dict[str, Any]:
+    # Diary generation can legitimately take several minutes. Keep connection,
+    # write and pool timeouts bounded, but let the SSE stream run until the
+    # server returns its final result.
+    timeout = httpx.Timeout(connect=30, read=None, write=30, pool=30)
     with client.stream(
         "POST",
         f"{base_url}/v1/rewrite-stream",
         headers=headers,
         json={"transcript": transcript, "date": date, "title_hint": title_hint},
-        timeout=330,
+        timeout=timeout,
     ) as response:
         response.raise_for_status()
         for line in response.iter_lines():
             if line.startswith("data: "):
-                return json.loads(line.removeprefix("data: "))
+                payload = json.loads(line.removeprefix("data: "))
+                if payload.get("error"):
+                    raise ClientError("diary refinement failed")
+                return payload
     raise ClientError("rewrite stream ended without a result")
+
+
+def _unfinished_output(audio: Path, output_root: Path) -> tuple[Path, str] | None:
+    """Reuse the newest local ASR checkpoint after a failed rewrite."""
+    for candidate in sorted(output_root.glob(f"{audio.stem}-*"), reverse=True):
+        checkpoint = candidate / "raw_transcript.json"
+        if (candidate / "diary.md").exists() or not checkpoint.is_file():
+            continue
+        try:
+            payload = json.loads(checkpoint.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        text = payload.get("text")
+        if payload.get("source") == audio.name and isinstance(text, str) and text.strip():
+            return candidate, text.strip()
+    return None
 
 
 def process_file(
@@ -171,32 +194,11 @@ def process_file(
 
     headers = _headers(api_key, app_token)
     base_url = endpoint_url.rstrip("/")
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_dir = output_root / f"{audio.stem}-{stamp}"
-    output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
-
-    with tempfile.TemporaryDirectory(prefix="voice-diary-chunks-") as raw_temp:
-        temp_dir = Path(raw_temp)
-        chunks = _split_audio(audio, temp_dir, chunk_seconds)
-        transcripts: list[dict[str, Any]] = []
-
+    checkpoint = _unfinished_output(audio, output_root)
+    if checkpoint is not None:
+        output_dir, full_transcript = checkpoint
         with httpx.Client() as client:
             wait_until_ready(client, base_url, headers)
-            for index, chunk in enumerate(chunks):
-                result = _transcribe(client, base_url, headers, chunk, language)
-                result["chunk_index"] = index
-                result["offset_seconds"] = index * chunk_seconds
-                transcripts.append(result)
-
-            full_transcript = "\n".join(item["text"].strip() for item in transcripts).strip()
-            (output_dir / "raw_transcript.json").write_text(
-                json.dumps(
-                    {"source": audio.name, "chunks": transcripts, "text": full_transcript},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
             rewrite = _rewrite(
                 client,
                 base_url,
@@ -205,6 +207,41 @@ def process_file(
                 date=date,
                 title_hint=title_hint,
             )
+    else:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_dir = output_root / f"{audio.stem}-{stamp}"
+        output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+
+        with tempfile.TemporaryDirectory(prefix="voice-diary-chunks-") as raw_temp:
+            temp_dir = Path(raw_temp)
+            chunks = _split_audio(audio, temp_dir, chunk_seconds)
+            transcripts: list[dict[str, Any]] = []
+
+            with httpx.Client() as client:
+                wait_until_ready(client, base_url, headers)
+                for index, chunk in enumerate(chunks):
+                    result = _transcribe(client, base_url, headers, chunk, language)
+                    result["chunk_index"] = index
+                    result["offset_seconds"] = index * chunk_seconds
+                    transcripts.append(result)
+
+                full_transcript = "\n".join(item["text"].strip() for item in transcripts).strip()
+                (output_dir / "raw_transcript.json").write_text(
+                    json.dumps(
+                        {"source": audio.name, "chunks": transcripts, "text": full_transcript},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                rewrite = _rewrite(
+                    client,
+                    base_url,
+                    headers,
+                    full_transcript,
+                    date=date,
+                    title_hint=title_hint,
+                )
 
     (output_dir / "cleaned_transcript.md").write_text(
         rewrite["cleaned_transcript"].rstrip() + "\n", encoding="utf-8"

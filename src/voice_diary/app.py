@@ -171,6 +171,14 @@ def create_app(
                 except TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
+                except Exception as exc:
+                    logger.error(
+                        "stream_failed error_type=%s error_location=%s",
+                        type(exc).__name__,
+                        _exception_location(exc),
+                    )
+                    yield 'data: {"error":"processing failed"}\n\n'
+                    return
                 yield f"data: {result.model_dump_json()}\n\n"
                 return
 

@@ -92,6 +92,11 @@ class LeakyFailureBackend(FakeBackend):
         raise RuntimeError("TOP_SECRET_TRANSCRIPT")
 
 
+class LeakyRewriteFailureBackend(FakeBackend):
+    def rewrite(self, transcript: str, *, date: str | None, title_hint: str | None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("TOP_SECRET_TRANSCRIPT")
+
+
 def test_exception_message_does_not_enter_logs_or_response(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.INFO)
     app = create_app(
@@ -109,6 +114,24 @@ def test_exception_message_does_not_enter_logs_or_response(tmp_path: Path, caplo
     assert "TOP_SECRET_TRANSCRIPT" not in caplog.text
     assert "error_location=" in caplog.text
     assert list(tmp_path.iterdir()) == []
+
+
+def test_stream_exception_does_not_enter_logs_or_response(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+    caplog.set_level(logging.INFO)
+    app = create_app(
+        settings=Settings(temp_dir=tmp_path),
+        manager=ready_manager(LeakyRewriteFailureBackend()),
+        start_loader=False,
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/rewrite-stream",
+            json={"transcript": "TOP_SECRET_TRANSCRIPT"},
+        )
+    assert response.status_code == 200
+    assert "TOP_SECRET_TRANSCRIPT" not in response.text
+    assert "TOP_SECRET_TRANSCRIPT" not in caplog.text
+    assert json.loads(response.text.removeprefix("data: ")) == {"error": "processing failed"}
 
 
 def test_optional_application_token(tmp_path: Path) -> None:

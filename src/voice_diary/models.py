@@ -48,6 +48,28 @@ def _json_object(text: str) -> dict[str, Any]:
     return payload
 
 
+def _diary_text(value: Any) -> Any:
+    """Accept a common model variation while preserving the public schema."""
+    if not isinstance(value, dict):
+        return value
+    title = value.get("title")
+    body = next(
+        (
+            value.get(key)
+            for key in ("content", "body", "text", "diary")
+            if isinstance(value.get(key), str)
+        ),
+        None,
+    )
+    if body is None:
+        body = "\n\n".join(
+            item for key, item in value.items() if key != "title" and isinstance(item, str)
+        )
+    if isinstance(title, str) and title.strip():
+        return f"# {title.strip()}\n\n{body or ''}".rstrip()
+    return body
+
+
 def _timestamps(value: Any) -> list[dict[str, Any]]:
     serialized: list[dict[str, Any]] = []
     for item in value or []:
@@ -151,9 +173,7 @@ class QwenBackend:
             enable_thinking=False,
         )
         inputs = self._processor([formatted], return_tensors="pt").to(self._editor.device)
-        transcript_tokens = len(
-            self._processor.encode(transcript, add_special_tokens=False)
-        )
+        transcript_tokens = len(self._processor.encode(transcript, add_special_tokens=False))
         max_new_tokens = _editor_token_budget(
             transcript_tokens,
             self.settings.max_editor_tokens,
@@ -174,6 +194,7 @@ class QwenBackend:
         )
         text = self._processor.decode(generated, skip_special_tokens=True)
         payload = _json_object(text)
+        payload["diary"] = _diary_text(payload.get("diary"))
         try:
             return RewriteResult.model_validate(payload)
         except Exception as exc:
