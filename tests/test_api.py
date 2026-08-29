@@ -75,9 +75,7 @@ class LeakyFailureBackend(FakeBackend):
         raise RuntimeError("TOP_SECRET_TRANSCRIPT")
 
 
-def test_exception_message_does_not_enter_logs_or_response(
-    tmp_path: Path, caplog
-) -> None:  # type: ignore[no-untyped-def]
+def test_exception_message_does_not_enter_logs_or_response(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
     caplog.set_level(logging.INFO)
     app = create_app(
         settings=Settings(temp_dir=tmp_path),
@@ -92,6 +90,7 @@ def test_exception_message_does_not_enter_logs_or_response(
     assert response.status_code == 500
     assert "TOP_SECRET_TRANSCRIPT" not in response.text
     assert "TOP_SECRET_TRANSCRIPT" not in caplog.text
+    assert "error_location=" in caplog.text
     assert list(tmp_path.iterdir()) == []
 
 

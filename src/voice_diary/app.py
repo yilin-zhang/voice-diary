@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import logging
 import time
+import traceback
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,6 +19,13 @@ from .privacy import UploadTooLarge, private_upload
 from .schemas import Health, ProcessResult, RewriteRequest, RewriteResult, Transcript
 
 logger = logging.getLogger("voice_diary.api")
+
+
+def _exception_location(exc: Exception) -> str:
+    frames = traceback.extract_tb(exc.__traceback__)[-4:]
+    return ">".join(
+        f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno}:{frame.name}" for frame in frames
+    )
 
 
 def _manager_for(settings: Settings) -> ModelManager:
@@ -62,10 +70,11 @@ def create_app(
             response = await call_next(request)
         except Exception as exc:
             logger.error(
-                "request_failed request_id=%s path=%s error_type=%s",
+                "request_failed request_id=%s path=%s error_type=%s error_location=%s",
                 request_id,
                 request.url.path,
                 type(exc).__name__,
+                _exception_location(exc),
             )
             return JSONResponse(
                 status_code=500,
