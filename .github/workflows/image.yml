@@ -3,7 +3,6 @@ name: Build private worker image
 on:
   workflow_dispatch:
   push:
-    branches: [main]
     tags: ["v*"]
 
 permissions:
