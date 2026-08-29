@@ -89,7 +89,7 @@ class QwenBackend:
     def load(self) -> None:
         import torch
         from qwen_asr import Qwen3ASRModel
-        from transformers import AutoModelForMultimodalLM, AutoProcessor
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
         asr_kwargs: dict[str, Any] = {
             "dtype": torch.bfloat16,
@@ -104,10 +104,10 @@ class QwenBackend:
             )
         self._asr = Qwen3ASRModel.from_pretrained(self.settings.asr_model, **asr_kwargs)
 
-        self._processor = AutoProcessor.from_pretrained(self.settings.editor_model)
-        self._editor = AutoModelForMultimodalLM.from_pretrained(
+        self._processor = AutoTokenizer.from_pretrained(self.settings.editor_model)
+        self._editor = AutoModelForCausalLM.from_pretrained(
             self.settings.editor_model,
-            dtype="auto",
+            torch_dtype="auto",
             device_map="auto",
             low_cpu_mem_usage=True,
         )
@@ -135,24 +135,15 @@ class QwenBackend:
             "transcript": transcript,
         }
         messages = [
-            {"role": "system", "content": [{"type": "text", "text": prompt}]},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(context, ensure_ascii=False),
-                    }
-                ],
-            },
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
         ]
-        inputs = self._processor.apply_chat_template(
+        formatted = self._processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        ).to(self._editor.device)
+            tokenize=False,
+        )
+        inputs = self._processor([formatted], return_tensors="pt").to(self._editor.device)
         output = self._editor.generate(
             **inputs,
             max_new_tokens=self.settings.max_editor_tokens,

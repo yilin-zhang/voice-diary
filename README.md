@@ -2,7 +2,7 @@
 
 Privacy-first transcription and diary editing for personal voice memos. The Mac is the
 source of truth: audio and generated files remain local. A Runpod load-balanced worker
-temporarily receives audio, runs Qwen3-ASR and Qwen3.5, returns the result, and unlinks the
+temporarily receives audio, runs Qwen3-ASR and Qwen3, returns the result, and unlinks the
 request file.
 
 ## Data flow
@@ -75,7 +75,7 @@ Production defaults:
 
 - ASR: `Qwen/Qwen3-ASR-1.7B`
 - timestamps: `Qwen/Qwen3-ForcedAligner-0.6B`
-- editor: `Qwen/Qwen3.5-35B-A3B-FP8`
+- editor: `Qwen/Qwen3-30B-A3B-Instruct-2507-FP8`
 - upload ceiling: 28 MiB (below Runpod's 30 MB load-balancer limit)
 - port and health port: `5000`
 
