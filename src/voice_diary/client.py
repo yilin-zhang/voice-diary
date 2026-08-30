@@ -251,6 +251,65 @@ def _rewrite_with_one_retry(
     raise AssertionError("unreachable")
 
 
+def _transcript_parts(transcript: str, max_chars: int = 2400) -> list[str]:
+    """Bound editor requests without depending on language-specific token estimates."""
+    remaining = transcript.strip()
+    parts: list[str] = []
+    boundaries = "\n。！？.!?;；,， "
+    while len(remaining) > max_chars:
+        split_at = max(
+            (remaining.rfind(mark, max_chars // 2, max_chars + 1) for mark in boundaries),
+            default=-1,
+        )
+        if split_at < max_chars // 2:
+            split_at = max_chars
+        else:
+            split_at += 1
+        parts.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
+def _without_repeated_heading(text: str) -> str:
+    lines = text.strip().splitlines()
+    if lines and lines[0].lstrip().startswith("#"):
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _rewrite_long_transcript(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    transcript: str,
+    *,
+    date: str | None,
+    title_hint: str | None,
+) -> dict[str, Any]:
+    parts = _transcript_parts(transcript)
+    diaries: list[str] = []
+    uncertainties: list[str] = []
+    for index, part in enumerate(parts):
+        result = _rewrite_with_one_retry(
+            client,
+            base_url,
+            headers,
+            part,
+            date=date,
+            title_hint=title_hint,
+        )
+        diary_part = result["diary"].strip()
+        if index:
+            diary_part = _without_repeated_heading(diary_part)
+        diaries.append(diary_part)
+        uncertainties.extend(result.get("uncertainties", []))
+    return {"diary": "\n\n".join(diaries), "uncertainties": uncertainties}
+
+
 def process_file(
     audio: Path,
     *,
@@ -272,7 +331,7 @@ def process_file(
         output_dir, full_transcript = checkpoint
         with httpx.Client(limits=httpx.Limits(max_keepalive_connections=0)) as client:
             wait_until_ready(client, base_url, headers)
-            diary = _rewrite_with_one_retry(
+            diary = _rewrite_long_transcript(
                 client,
                 base_url,
                 headers,
@@ -314,7 +373,7 @@ def process_file(
                             title_hint=title_hint,
                             save_transcript=save_transcript,
                         )
-                        diary = _rewrite_with_one_retry(
+                        diary = _rewrite_long_transcript(
                             client,
                             base_url,
                             headers,
@@ -327,7 +386,7 @@ def process_file(
                         saved = _unfinished_output(audio, output_root)
                         if saved is not None:
                             output_dir, full_transcript = saved
-                            diary = _rewrite_with_one_retry(
+                            diary = _rewrite_long_transcript(
                                 client,
                                 base_url,
                                 headers,

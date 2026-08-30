@@ -78,7 +78,7 @@ def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> No
     )
     monkeypatch.setattr(
         client_module,
-        "_rewrite_with_one_retry",
+        "_rewrite_long_transcript",
         lambda *args, **kwargs: {
             "diary": "# 今天\n\n今天散步了。",
             "uncertainties": [],
@@ -124,7 +124,7 @@ def test_process_file_reuses_unfinished_transcript(tmp_path: Path, monkeypatch) 
     )
     monkeypatch.setattr(
         client_module,
-        "_rewrite_with_one_retry",
+        "_rewrite_long_transcript",
         lambda *args, **kwargs: {
             "diary": "# 日记\n\n已完成的转录",
             "uncertainties": [],
@@ -167,7 +167,7 @@ def test_process_file_uses_checkpoint_if_stream_drops_after_asr(
         return {"diary": "# 日记\n\n已经完成的 ASR", "uncertainties": []}
 
     monkeypatch.setattr(client_module, "_process_stream", dropped_stream)
-    monkeypatch.setattr(client_module, "_rewrite_with_one_retry", rewrite)
+    monkeypatch.setattr(client_module, "_rewrite_long_transcript", rewrite)
 
     output = client_module.process_file(
         audio,
@@ -182,3 +182,25 @@ def test_process_file_uses_checkpoint_if_stream_drops_after_asr(
 
     assert calls == {"process": 1, "rewrite": 1}
     assert (output / "diary.md").exists()
+
+
+def test_long_transcript_is_rewritten_in_bounded_parts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+
+    def rewrite(client, base_url, headers, transcript, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(transcript)
+        return {"diary": f"# 日记\n\n{transcript}", "uncertainties": []}
+
+    monkeypatch.setattr(client_module, "_rewrite_with_one_retry", rewrite)
+    result = client_module._rewrite_long_transcript(
+        object(),
+        "https://example.invalid",
+        {},
+        "第一段。" * 1000,
+        date=None,
+        title_hint=None,
+    )
+
+    assert len(calls) > 1
+    assert all(len(part) <= 2400 for part in calls)
+    assert result["diary"].count("# 日记") == 1

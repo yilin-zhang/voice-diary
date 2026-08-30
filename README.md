@@ -51,7 +51,8 @@ The client compresses the memo once to mono 16 kHz AAC and uploads it once. The 
 temporarily splits it into 60-second mono 16 kHz PCM WAV chunks for sequential ASR. The
 transcript is streamed back and saved locally before a separate diary request begins. This
 keeps both requests below the load-balancer deadline. If the rewrite connection drops, the
-client retries only that rewrite once.
+client retries only that rewrite once. Long transcripts are refined in bounded text parts
+and joined locally, so no single editor request can exhaust the generation limit.
 
 ```bash
 export VOICE_DIARY_ENDPOINT_URL="https://ENDPOINT_ID.api.runpod.ai"
