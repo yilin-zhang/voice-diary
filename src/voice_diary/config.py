@@ -26,7 +26,8 @@ class Settings:
     aligner_model: str | None = None
     editor_model: str = "Qwen/Qwen3-14B-FP8"
     max_upload_bytes: int = 28 * 1024 * 1024
-    max_editor_tokens: int = 8192
+    max_editor_tokens: int = 3072
+    asr_chunk_seconds: int = 60
     temp_dir: Path = _default_temp_dir()
     app_token: str | None = None
     fake_mode: bool = False
@@ -39,7 +40,8 @@ class Settings:
             aligner_model=aligner or None,
             editor_model=os.getenv("VOICE_DIARY_EDITOR_MODEL", "Qwen/Qwen3-14B-FP8"),
             max_upload_bytes=int(os.getenv("VOICE_DIARY_MAX_UPLOAD_BYTES", str(28 * 1024 * 1024))),
-            max_editor_tokens=int(os.getenv("VOICE_DIARY_MAX_EDITOR_TOKENS", "8192")),
+            max_editor_tokens=int(os.getenv("VOICE_DIARY_MAX_EDITOR_TOKENS", "3072")),
+            asr_chunk_seconds=int(os.getenv("VOICE_DIARY_ASR_CHUNK_SECONDS", "60")),
             temp_dir=Path(os.getenv("VOICE_DIARY_TEMP_DIR", str(_default_temp_dir()))),
             app_token=os.getenv("VOICE_DIARY_APP_TOKEN") or None,
             fake_mode=_env_bool("VOICE_DIARY_FAKE_MODE"),

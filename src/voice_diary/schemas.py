@@ -17,15 +17,14 @@ class RewriteRequest(BaseModel):
     title_hint: str | None = Field(default=None, max_length=200)
 
 
-class RewriteResult(BaseModel):
-    cleaned_transcript: str
+class DiaryResult(BaseModel):
     diary: str
     uncertainties: list[str] = Field(default_factory=list)
 
 
 class ProcessResult(BaseModel):
     transcript: Transcript
-    rewrite: RewriteResult
+    diary: DiaryResult
 
 
 class Health(BaseModel):

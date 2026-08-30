@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .config import Settings
-from .schemas import RewriteResult, Transcript
+from .schemas import DiaryResult, Transcript
 
 logger = logging.getLogger("voice_diary.models")
 
@@ -30,7 +30,7 @@ class ModelBackend(Protocol):
 
     def rewrite(
         self, transcript: str, *, date: str | None, title_hint: str | None
-    ) -> RewriteResult: ...
+    ) -> DiaryResult: ...
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -85,8 +85,8 @@ def _timestamps(value: Any) -> list[dict[str, Any]]:
 
 
 def _editor_token_budget(transcript_tokens: int, cap: int) -> int:
-    """Allow room for cleaned text plus the diary without always using the full cap."""
-    return min(cap, max(512, transcript_tokens * 2 + 256))
+    """Allow one fact-preserving diary without duplicating the full transcript."""
+    return min(cap, max(512, transcript_tokens + 256))
 
 
 class FakeBackend:
@@ -99,12 +99,10 @@ class FakeBackend:
         size = audio_path.stat().st_size
         return Transcript(text=f"嗯，测试录音，共 {size} 字节。", language=language or "Chinese")
 
-    def rewrite(
-        self, transcript: str, *, date: str | None, title_hint: str | None
-    ) -> RewriteResult:
+    def rewrite(self, transcript: str, *, date: str | None, title_hint: str | None) -> DiaryResult:
         cleaned = transcript.replace("嗯，", "").replace("嗯", "").strip()
         heading = title_hint or date or "今天"
-        return RewriteResult(cleaned_transcript=cleaned, diary=f"# {heading}\n\n{cleaned}")
+        return DiaryResult(diary=f"# {heading}\n\n{cleaned}")
 
 
 class QwenBackend:
@@ -153,9 +151,7 @@ class QwenBackend:
             timestamps=_timestamps(getattr(result, "time_stamps", None)),
         )
 
-    def rewrite(
-        self, transcript: str, *, date: str | None, title_hint: str | None
-    ) -> RewriteResult:
+    def rewrite(self, transcript: str, *, date: str | None, title_hint: str | None) -> DiaryResult:
         prompt = files("voice_diary.prompts").joinpath("diary_zh.txt").read_text("utf-8")
         context = {
             "date": date,
@@ -196,7 +192,7 @@ class QwenBackend:
         payload = _json_object(text)
         payload["diary"] = _diary_text(payload.get("diary"))
         try:
-            return RewriteResult.model_validate(payload)
+            return DiaryResult.model_validate(payload)
         except Exception as exc:
             raise ModelOutputError("editor JSON has the wrong schema") from exc
 
@@ -228,9 +224,7 @@ class ModelManager:
         with self._inference_lock:
             return self.backend.transcribe(audio_path, language)
 
-    def rewrite(
-        self, transcript: str, *, date: str | None, title_hint: str | None
-    ) -> RewriteResult:
+    def rewrite(self, transcript: str, *, date: str | None, title_hint: str | None) -> DiaryResult:
         self.ensure_ready()
         with self._inference_lock:
             return self.backend.rewrite(transcript, date=date, title_hint=title_hint)

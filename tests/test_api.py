@@ -35,7 +35,8 @@ def test_ping_and_rewrite(tmp_path: Path) -> None:
             json={"transcript": "嗯，今天散步了。", "date": "2026-08-28"},
         )
     assert response.status_code == 200
-    assert response.json()["cleaned_transcript"] == "今天散步了。"
+    assert response.json()["diary"] == "# 2026-08-28\n\n今天散步了。"
+    assert "cleaned_transcript" not in response.json()
     assert response.headers["cache-control"] == "no-store"
 
 
@@ -51,8 +52,37 @@ def test_streaming_rewrite_returns_sse_result(tmp_path: Path) -> None:
             json={"transcript": "嗯，今天散步了。", "date": "2026-08-28"},
         )
     assert response.status_code == 200
+    assert "event: diary" in response.text
     event = next(line for line in response.text.splitlines() if line.startswith("data: "))
-    assert json.loads(event.removeprefix("data: "))["cleaned_transcript"] == "今天散步了。"
+    assert json.loads(event.removeprefix("data: "))["diary"].endswith("今天散步了。")
+
+
+def test_process_stream_sends_checkpoint_then_diary_and_cleans_up(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("voice_diary.app.split_audio", lambda source, target, seconds: [source])
+    app = create_app(
+        settings=Settings(temp_dir=tmp_path, asr_chunk_seconds=60),
+        manager=ready_manager(),
+        start_loader=False,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/process-stream",
+            files={"audio": ("public.m4a", b"public audio", "audio/mp4")},
+            data={"language": "Chinese", "date": "2026-08-28"},
+        )
+
+    assert response.status_code == 200
+    assert response.text.index("event: transcript") < response.text.index("event: diary")
+    data = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert data[0]["chunks"][0]["offset_seconds"] == 0
+    assert data[-1]["diary"].startswith("# 2026-08-28")
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_transcribe_unlinks_private_upload(tmp_path: Path) -> None:
@@ -131,7 +161,8 @@ def test_stream_exception_does_not_enter_logs_or_response(tmp_path: Path, caplog
     assert response.status_code == 200
     assert "TOP_SECRET_TRANSCRIPT" not in response.text
     assert "TOP_SECRET_TRANSCRIPT" not in caplog.text
-    assert json.loads(response.text.removeprefix("data: ")) == {"error": "processing failed"}
+    payload = next(line for line in response.text.splitlines() if line.startswith("data: "))
+    assert json.loads(payload.removeprefix("data: ")) == {"error": "processing failed"}
 
 
 def test_optional_application_token(tmp_path: Path) -> None:

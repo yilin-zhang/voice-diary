@@ -16,8 +16,9 @@ def test_rejects_non_json_editor_output() -> None:
 
 def test_editor_token_budget_scales_with_transcript_and_respects_cap() -> None:
     assert _editor_token_budget(20, 8192) == 512
-    assert _editor_token_budget(1000, 8192) == 2256
-    assert _editor_token_budget(5000, 8192) == 8192
+    assert _editor_token_budget(1000, 8192) == 1256
+    assert _editor_token_budget(5000, 8192) == 5256
+    assert _editor_token_budget(5000, 3072) == 3072
 
 
 def test_diary_text_accepts_nested_model_output() -> None:

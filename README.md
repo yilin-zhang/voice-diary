@@ -8,8 +8,8 @@ request file.
 ## Data flow
 
 ```text
-local memo -> local ffmpeg chunks -> HTTPS multipart -> ephemeral Runpod worker
-           <- transcript / cleaned text / diary <- direct HTTP response
+local memo -> one compressed upload -> ephemeral Runpod worker -> 60s ASR chunks
+           <- transcript checkpoint, then diary <- direct SSE response
 ```
 
 The worker has no database, S3 integration, or network volume. Uploads use random names in
@@ -25,7 +25,8 @@ model output, original filenames, headers, or exception messages.
 - `src/voice_diary/app.py` — load-balanced FastAPI service.
 - `src/voice_diary/models.py` — fake and Qwen model backends.
 - `src/voice_diary/privacy.py` — bounded random-name temporary uploads.
-- `src/voice_diary/client.py` — local chunk/upload/save CLI.
+- `src/voice_diary/audio.py` — worker-side ephemeral ASR chunking.
+- `src/voice_diary/client.py` — local compress/upload/checkpoint CLI.
 - `src/voice_diary/prompts/diary_zh.txt` — fact-preserving Chinese diary prompt.
 
 ## Local API tests
@@ -45,8 +46,10 @@ be enabled on the production endpoint.
 
 ## Local client
 
-The client always normalizes and chunks the memo locally with `ffmpeg`. It then calls
-`/v1/transcribe` for each chunk and `/v1/rewrite` once for the combined transcript.
+The client compresses the memo once to mono 16 kHz AAC and uploads it once. The worker
+temporarily splits it into 60-second mono 16 kHz PCM WAV chunks for sequential ASR. The
+transcript is streamed back and saved locally before diary generation begins. If the
+connection drops afterward, the client retries only the diary rewrite once.
 
 ```bash
 export VOICE_DIARY_ENDPOINT_URL="https://ENDPOINT_ID.api.runpod.ai"
@@ -64,7 +67,6 @@ written to output files or logs.
 Results are written under `.voice-diary-output/`:
 
 - `raw_transcript.json`
-- `cleaned_transcript.md`
 - `diary.md`
 - `metadata.json`
 
@@ -77,8 +79,9 @@ audio, confirm the GitHub repository and GHCR package are private.
 Production defaults:
 
 - ASR: `Qwen/Qwen3-ASR-1.7B`
-- timestamps: `Qwen/Qwen3-ForcedAligner-0.6B`
+- timestamps: disabled by default (the forced aligner is opt-in)
 - editor: `Qwen/Qwen3-14B-FP8` with thinking disabled
+- editor output: diary plus uncertainty notes only, capped at 3072 generated tokens
 - upload ceiling: 28 MiB (below Runpod's 30 MB load-balancer limit)
 - port and health port: `5000`
 
@@ -90,7 +93,7 @@ or larger editor model.
 ## Required verification before real data
 
 1. Run unit tests and static checks.
-2. Build the private image and deploy with fake mode enabled.
+2. Build the image and deploy with fake mode enabled.
 3. Call it with synthetic audio and inspect all endpoint/worker logs for content leakage.
 4. Redeploy with fake mode disabled and run a non-sensitive ASR fixture.
 5. Verify the response, temporary-file cleanup, GPU memory, cold start, and scale-to-zero.

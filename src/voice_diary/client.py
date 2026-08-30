@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import mimetypes
 import os
 import shutil
 import subprocess
@@ -10,6 +9,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,10 @@ import httpx
 
 
 class ClientError(RuntimeError):
+    pass
+
+
+class StreamEnded(ClientError):
     pass
 
 
@@ -46,7 +50,7 @@ def _runpod_api_key(config_path: Path | None = None) -> str | None:
 
 
 def _headers(api_key: str, app_token: str | None) -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {"Authorization": f"Bearer {api_key}", "Connection": "close"}
     if app_token:
         headers["X-Voice-Diary-Key"] = app_token
     return headers
@@ -72,10 +76,10 @@ def wait_until_ready(
     raise ClientError("endpoint did not become ready")
 
 
-def _split_audio(source: Path, destination: Path, seconds: int) -> list[Path]:
+def _compress_audio(source: Path, destination: Path) -> Path:
     if shutil.which("ffmpeg") is None:
-        raise ClientError("ffmpeg is required to split large audio files")
-    pattern = destination / "chunk-%05d.wav"
+        raise ClientError("ffmpeg is required to compress audio")
+    target = destination / "memo.m4a"
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -89,46 +93,78 @@ def _split_audio(source: Path, destination: Path, seconds: int) -> list[Path]:
         "-ar",
         "16000",
         "-c:a",
-        "pcm_s16le",
-        "-f",
-        "segment",
-        "-segment_format",
-        "wav",
-        "-segment_time",
-        str(seconds),
-        "-reset_timestamps",
-        "1",
-        str(pattern),
+        "aac",
+        "-b:a",
+        "32k",
+        "-movflags",
+        "+faststart",
+        str(target),
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
-        raise ClientError("ffmpeg could not split the audio")
-    chunks = sorted(destination.glob("chunk-*.wav"))
-    if not chunks:
-        raise ClientError("ffmpeg produced no audio chunks")
-    return chunks
+        raise ClientError("ffmpeg could not compress the audio")
+    if not target.is_file() or target.stat().st_size == 0:
+        raise ClientError("ffmpeg produced no compressed audio")
+    return target
 
 
-def _transcribe(
+def _events(response: httpx.Response) -> Iterator[tuple[str, dict[str, Any]]]:
+    event = "message"
+    data_lines: list[str] = []
+    for line in response.iter_lines():
+        if line.startswith(":"):
+            continue
+        if not line:
+            if data_lines:
+                yield event, json.loads("\n".join(data_lines))
+            event = "message"
+            data_lines = []
+        elif line.startswith("event: "):
+            event = line.removeprefix("event: ")
+        elif line.startswith("data: "):
+            data_lines.append(line.removeprefix("data: "))
+    if data_lines:
+        yield event, json.loads("\n".join(data_lines))
+
+
+def _process_stream(
     client: httpx.Client,
     base_url: str,
     headers: dict[str, str],
     audio: Path,
+    *,
     language: str,
+    date: str | None,
+    title_hint: str | None,
+    save_transcript: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
-    content_type = mimetypes.guess_type(audio.name)[0] or "application/octet-stream"
-    with audio.open("rb") as stream:
-        response = client.post(
-            f"{base_url}/v1/transcribe",
+    timeout = httpx.Timeout(connect=30, read=None, write=120, pool=30)
+    with (
+        audio.open("rb") as stream,
+        client.stream(
+            "POST",
+            f"{base_url}/v1/process-stream",
             headers=headers,
-            files={"audio": ("audio" + audio.suffix, stream, content_type)},
-            data={"language": language},
-            timeout=330,
-        )
-    if response.status_code == 413:
-        raise ClientError("audio chunk is still too large; reduce --chunk-seconds")
-    response.raise_for_status()
-    return response.json()
+            files={"audio": ("audio.m4a", stream, "audio/mp4")},
+            data={
+                "language": language,
+                "date": date or "",
+                "title_hint": title_hint or "",
+            },
+            timeout=timeout,
+        ) as response,
+    ):
+        if response.status_code == 413:
+            raise ClientError("compressed audio exceeds the server upload limit")
+        response.raise_for_status()
+        for event, payload in _events(response):
+            if event == "error" or payload.get("error"):
+                raise ClientError("voice processing failed")
+            if event == "transcript":
+                save_transcript(payload)
+            elif event == "diary":
+                return payload
+    raise StreamEnded("processing stream ended without a diary")
 
 
 def _rewrite(
@@ -152,13 +188,12 @@ def _rewrite(
         timeout=timeout,
     ) as response:
         response.raise_for_status()
-        for line in response.iter_lines():
-            if line.startswith("data: "):
-                payload = json.loads(line.removeprefix("data: "))
-                if payload.get("error"):
-                    raise ClientError("diary refinement failed")
+        for event, payload in _events(response):
+            if event == "error" or payload.get("error"):
+                raise ClientError("diary refinement failed")
+            if event == "diary":
                 return payload
-    raise ClientError("rewrite stream ended without a result")
+    raise StreamEnded("rewrite stream ended without a diary")
 
 
 def _unfinished_output(audio: Path, output_root: Path) -> tuple[Path, str] | None:
@@ -177,6 +212,44 @@ def _unfinished_output(audio: Path, output_root: Path) -> tuple[Path, str] | Non
     return None
 
 
+def _retryable(exc: Exception, *, allow_bad_request: bool = False) -> bool:
+    if isinstance(exc, (httpx.TransportError, StreamEnded)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        statuses = {502, 503, 504}
+        if allow_bad_request:
+            statuses.add(400)
+        return exc.response.status_code in statuses
+    return False
+
+
+def _rewrite_with_one_retry(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    transcript: str,
+    *,
+    date: str | None,
+    title_hint: str | None,
+) -> dict[str, Any]:
+    for attempt in range(2):
+        try:
+            return _rewrite(
+                client,
+                base_url,
+                headers,
+                transcript,
+                date=date,
+                title_hint=title_hint,
+            )
+        except Exception as exc:
+            if attempt or not _retryable(exc):
+                raise
+            time.sleep(2)
+            wait_until_ready(client, base_url, headers)
+    raise AssertionError("unreachable")
+
+
 def process_file(
     audio: Path,
     *,
@@ -187,7 +260,6 @@ def process_file(
     language: str,
     date: str | None,
     title_hint: str | None,
-    chunk_seconds: int,
 ) -> Path:
     if not audio.is_file():
         raise ClientError(f"audio file does not exist: {audio}")
@@ -197,9 +269,9 @@ def process_file(
     checkpoint = _unfinished_output(audio, output_root)
     if checkpoint is not None:
         output_dir, full_transcript = checkpoint
-        with httpx.Client() as client:
+        with httpx.Client(limits=httpx.Limits(max_keepalive_connections=0)) as client:
             wait_until_ready(client, base_url, headers)
-            rewrite = _rewrite(
+            diary = _rewrite_with_one_retry(
                 client,
                 base_url,
                 headers,
@@ -208,45 +280,61 @@ def process_file(
                 title_hint=title_hint,
             )
     else:
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        output_dir = output_root / f"{audio.stem}-{stamp}"
-        output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+        with tempfile.TemporaryDirectory(prefix="voice-diary-upload-") as raw_temp:
+            compressed = _compress_audio(audio, Path(raw_temp))
+            if compressed.stat().st_size > 27 * 1024 * 1024:
+                raise ClientError("compressed audio exceeds the safe upload limit")
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            output_dir = output_root / f"{audio.stem}-{stamp}"
+            output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+            transcript_path = output_dir / "raw_transcript.json"
 
-        with tempfile.TemporaryDirectory(prefix="voice-diary-chunks-") as raw_temp:
-            temp_dir = Path(raw_temp)
-            chunks = _split_audio(audio, temp_dir, chunk_seconds)
-            transcripts: list[dict[str, Any]] = []
-
-            with httpx.Client() as client:
-                wait_until_ready(client, base_url, headers)
-                for index, chunk in enumerate(chunks):
-                    result = _transcribe(client, base_url, headers, chunk, language)
-                    result["chunk_index"] = index
-                    result["offset_seconds"] = index * chunk_seconds
-                    transcripts.append(result)
-
-                full_transcript = "\n".join(item["text"].strip() for item in transcripts).strip()
-                (output_dir / "raw_transcript.json").write_text(
+            def save_transcript(payload: dict[str, Any]) -> None:
+                transcript_path.write_text(
                     json.dumps(
-                        {"source": audio.name, "chunks": transcripts, "text": full_transcript},
+                        {"source": audio.name, **payload},
                         ensure_ascii=False,
                         indent=2,
                     ),
                     encoding="utf-8",
                 )
-                rewrite = _rewrite(
-                    client,
-                    base_url,
-                    headers,
-                    full_transcript,
-                    date=date,
-                    title_hint=title_hint,
-                )
 
-    (output_dir / "cleaned_transcript.md").write_text(
-        rewrite["cleaned_transcript"].rstrip() + "\n", encoding="utf-8"
-    )
-    (output_dir / "diary.md").write_text(rewrite["diary"].rstrip() + "\n", encoding="utf-8")
+            with httpx.Client(limits=httpx.Limits(max_keepalive_connections=0)) as client:
+                wait_until_ready(client, base_url, headers)
+                for attempt in range(2):
+                    try:
+                        diary = _process_stream(
+                            client,
+                            base_url,
+                            headers,
+                            compressed,
+                            language=language,
+                            date=date,
+                            title_hint=title_hint,
+                            save_transcript=save_transcript,
+                        )
+                        break
+                    except Exception as exc:
+                        saved = _unfinished_output(audio, output_root)
+                        if saved is not None:
+                            output_dir, full_transcript = saved
+                            diary = _rewrite_with_one_retry(
+                                client,
+                                base_url,
+                                headers,
+                                full_transcript,
+                                date=date,
+                                title_hint=title_hint,
+                            )
+                            break
+                        if attempt or not _retryable(exc, allow_bad_request=True):
+                            raise
+                        time.sleep(2)
+                        wait_until_ready(client, base_url, headers)
+                else:
+                    raise AssertionError("unreachable")
+
+    (output_dir / "diary.md").write_text(diary["diary"].rstrip() + "\n", encoding="utf-8")
     (output_dir / "metadata.json").write_text(
         json.dumps(
             {
@@ -254,7 +342,7 @@ def process_file(
                 "language": language,
                 "date": date,
                 "title_hint": title_hint,
-                "uncertainties": rewrite.get("uncertainties", []),
+                "uncertainties": diary.get("uncertainties", []),
             },
             ensure_ascii=False,
             indent=2,
@@ -275,7 +363,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", default="Chinese")
     parser.add_argument("--date")
     parser.add_argument("--title")
-    parser.add_argument("--chunk-seconds", type=int, default=60)
     parser.add_argument("--output", type=Path, default=Path(".voice-diary-output"))
     return parser
 
@@ -297,7 +384,6 @@ def main() -> None:
             language=args.language,
             date=args.date,
             title_hint=args.title,
-            chunk_seconds=args.chunk_seconds,
         )
     except (ClientError, httpx.HTTPError) as exc:
         sys.exit(f"voice-diary failed: {exc}")

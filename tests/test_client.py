@@ -31,24 +31,26 @@ def test_runpod_api_key_handles_missing_or_invalid_config(tmp_path: Path, monkey
     assert client_module._runpod_api_key(invalid) is None
 
 
-def test_split_audio_outputs_asr_compatible_wav(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_compress_audio_outputs_small_mono_m4a(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "memo.m4a"
     source.write_bytes(b"input")
     seen_command: list[str] = []
 
     def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
         seen_command.extend(command)
-        Path(command[-1].replace("%05d", "00000")).write_bytes(b"wav")
+        Path(command[-1]).write_bytes(b"m4a")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(client_module.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(client_module.subprocess, "run", fake_run)
 
-    chunks = client_module._split_audio(source, tmp_path, 600)
+    compressed = client_module._compress_audio(source, tmp_path)
 
-    assert [chunk.suffix for chunk in chunks] == [".wav"]
-    assert seen_command[seen_command.index("-c:a") + 1] == "pcm_s16le"
-    assert seen_command[seen_command.index("-segment_format") + 1] == "wav"
+    assert compressed.suffix == ".m4a"
+    assert seen_command[seen_command.index("-ac") + 1] == "1"
+    assert seen_command[seen_command.index("-ar") + 1] == "16000"
+    assert seen_command[seen_command.index("-c:a") + 1] == "aac"
+    assert seen_command[seen_command.index("-b:a") + 1] == "32k"
 
 
 def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -57,27 +59,25 @@ def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr(
         client_module,
-        "_split_audio",
-        lambda source, destination, seconds: [source],
+        "_compress_audio",
+        lambda source, destination: source,
     )
     monkeypatch.setattr(client_module, "wait_until_ready", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         client_module,
-        "_transcribe",
-        lambda *args, **kwargs: {
-            "text": "嗯，今天散步了。",
-            "language": "Chinese",
-            "timestamps": [],
-        },
-    )
-    monkeypatch.setattr(
-        client_module,
-        "_rewrite",
-        lambda *args, **kwargs: {
-            "cleaned_transcript": "今天散步了。",
-            "diary": "# 今天\n\n今天散步了。",
-            "uncertainties": [],
-        },
+        "_process_stream",
+        lambda *args, save_transcript, **kwargs: (
+            save_transcript(
+                {
+                    "text": "嗯，今天散步了。",
+                    "chunks": [{"text": "嗯，今天散步了。", "chunk_index": 0}],
+                }
+            )
+            or {
+                "diary": "# 今天\n\n今天散步了。",
+                "uncertainties": [],
+            }
+        ),
     )
 
     output = client_module.process_file(
@@ -89,12 +89,12 @@ def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> No
         language="Chinese",
         date="2026-08-28",
         title_hint=None,
-        chunk_seconds=600,
     )
 
     assert (output / "diary.md").read_text("utf-8") == "# 今天\n\n今天散步了。\n"
     raw = json.loads((output / "raw_transcript.json").read_text("utf-8"))
     assert raw["text"] == "嗯，今天散步了。"
+    assert not (output / "cleaned_transcript.md").exists()
     assert "not-written-to-disk" not in "".join(
         path.read_text("utf-8") for path in output.iterdir()
     )
@@ -114,14 +114,13 @@ def test_process_file_reuses_unfinished_transcript(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(client_module, "wait_until_ready", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         client_module,
-        "_split_audio",
+        "_compress_audio",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ASR reran")),
     )
     monkeypatch.setattr(
         client_module,
-        "_rewrite",
+        "_rewrite_with_one_retry",
         lambda *args, **kwargs: {
-            "cleaned_transcript": "已完成的转录",
             "diary": "# 日记\n\n已完成的转录",
             "uncertainties": [],
         },
@@ -136,8 +135,45 @@ def test_process_file_reuses_unfinished_transcript(tmp_path: Path, monkeypatch) 
         language="Chinese",
         date=None,
         title_hint=None,
-        chunk_seconds=60,
     )
 
     assert output == checkpoint
+    assert (output / "diary.md").exists()
+
+
+def test_process_file_uses_checkpoint_if_stream_drops_after_asr(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    audio = tmp_path / "memo.m4a"
+    audio.write_bytes(b"not-real-audio")
+    output_root = tmp_path / "output"
+    calls = {"process": 0, "rewrite": 0}
+
+    monkeypatch.setattr(client_module, "_compress_audio", lambda source, destination: source)
+    monkeypatch.setattr(client_module, "wait_until_ready", lambda *args, **kwargs: None)
+
+    def dropped_stream(*args, save_transcript, **kwargs):  # type: ignore[no-untyped-def]
+        calls["process"] += 1
+        save_transcript({"text": "已经完成的 ASR", "chunks": []})
+        raise client_module.StreamEnded("connection dropped")
+
+    def rewrite(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls["rewrite"] += 1
+        return {"diary": "# 日记\n\n已经完成的 ASR", "uncertainties": []}
+
+    monkeypatch.setattr(client_module, "_process_stream", dropped_stream)
+    monkeypatch.setattr(client_module, "_rewrite_with_one_retry", rewrite)
+
+    output = client_module.process_file(
+        audio,
+        endpoint_url="https://example.invalid",
+        api_key="secret",
+        app_token=None,
+        output_root=output_root,
+        language="Chinese",
+        date=None,
+        title_hint=None,
+    )
+
+    assert calls == {"process": 1, "rewrite": 1}
     assert (output / "diary.md").exists()

@@ -2,21 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
+import tempfile
 import time
 import traceback
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from .audio import split_audio
 from .config import Settings
 from .models import FakeBackend, ModelManager, ModelsNotReady, QwenBackend
 from .privacy import UploadTooLarge, private_upload
-from .schemas import Health, ProcessResult, RewriteRequest, RewriteResult, Transcript
+from .schemas import DiaryResult, Health, ProcessResult, RewriteRequest, Transcript
 
 logger = logging.getLogger("voice_diary.api")
 
@@ -122,7 +126,7 @@ def create_app(
                 detail=f"audio exceeds {config.max_upload_bytes} bytes; split it locally",
             ) from exc
 
-    async def run_rewrite(request: RewriteRequest) -> RewriteResult:
+    async def run_rewrite(request: RewriteRequest) -> DiaryResult:
         require_models()
         return await asyncio.to_thread(
             models.rewrite,
@@ -130,6 +134,18 @@ def create_app(
             date=request.date,
             title_hint=request.title_hint,
         )
+
+    def stream_error(exc: Exception) -> str:
+        logger.error(
+            "stream_failed error_type=%s error_location=%s",
+            type(exc).__name__,
+            _exception_location(exc),
+        )
+        return 'event: error\ndata: {"error":"processing failed"}\n\n'
+
+    def stream_event(event: str, payload: dict[str, Any]) -> str:
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return f"event: {event}\ndata: {data}\n\n"
 
     @api.get("/ping", response_model=Health)
     async def ping() -> Health | Response:
@@ -152,10 +168,10 @@ def create_app(
 
     @api.post(
         "/v1/rewrite",
-        response_model=RewriteResult,
+        response_model=DiaryResult,
         dependencies=[Depends(authorize)],
     )
-    async def rewrite(request: RewriteRequest) -> RewriteResult:
+    async def rewrite(request: RewriteRequest) -> DiaryResult:
         return await run_rewrite(request)
 
     @api.post(
@@ -172,15 +188,97 @@ def create_app(
                     yield ": keep-alive\n\n"
                     continue
                 except Exception as exc:
-                    logger.error(
-                        "stream_failed error_type=%s error_location=%s",
-                        type(exc).__name__,
-                        _exception_location(exc),
-                    )
-                    yield 'data: {"error":"processing failed"}\n\n'
+                    yield stream_error(exc)
                     return
-                yield f"data: {result.model_dump_json()}\n\n"
+                yield stream_event("diary", result.model_dump())
                 return
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"},
+        )
+
+    @api.post(
+        "/v1/process-stream",
+        dependencies=[Depends(authorize)],
+    )
+    async def process_stream(
+        audio: Annotated[UploadFile, File()],
+        language: Annotated[str | None, Form()] = "Chinese",
+        date: Annotated[str | None, Form()] = None,
+        title_hint: Annotated[str | None, Form()] = None,
+    ) -> StreamingResponse:
+        async def run_pipeline(
+            queue: asyncio.Queue[tuple[str, dict[str, Any]]],
+        ) -> DiaryResult:
+            require_models()
+            try:
+                async with private_upload(
+                    audio,
+                    directory=config.temp_dir,
+                    max_bytes=config.max_upload_bytes,
+                ) as (audio_path, _size):
+                    with tempfile.TemporaryDirectory(
+                        prefix="voice-diary-chunks-",
+                        dir=config.temp_dir,
+                    ) as raw_chunks:
+                        chunks = await asyncio.to_thread(
+                            split_audio,
+                            audio_path,
+                            Path(raw_chunks),
+                            config.asr_chunk_seconds,
+                        )
+                        transcripts: list[dict[str, Any]] = []
+                        for index, chunk in enumerate(chunks):
+                            result = await asyncio.to_thread(models.transcribe, chunk, language)
+                            item = result.model_dump()
+                            item["chunk_index"] = index
+                            item["offset_seconds"] = index * config.asr_chunk_seconds
+                            transcripts.append(item)
+            except UploadTooLarge as exc:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"audio exceeds {config.max_upload_bytes} bytes",
+                ) from exc
+
+            full_transcript = "\n".join(item["text"].strip() for item in transcripts).strip()
+            if not full_transcript:
+                raise ValueError("ASR returned an empty transcript")
+            await queue.put(
+                (
+                    "transcript",
+                    {"text": full_transcript, "chunks": transcripts},
+                )
+            )
+            return await asyncio.to_thread(
+                models.rewrite,
+                full_transcript,
+                date=date,
+                title_hint=title_hint,
+            )
+
+        async def events():  # type: ignore[no-untyped-def]
+            queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+            task = asyncio.create_task(run_pipeline(queue))
+            while not task.done():
+                try:
+                    event, payload = await asyncio.wait_for(queue.get(), timeout=10)
+                except TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                yield stream_event(event, payload)
+
+            while not queue.empty():
+                event, payload = queue.get_nowait()
+                yield stream_event(event, payload)
+
+            try:
+                result = task.result()
+            except Exception as exc:
+                yield stream_error(exc)
+                return
+            yield stream_event("diary", result.model_dump())
 
         return StreamingResponse(
             events(),
@@ -203,7 +301,7 @@ def create_app(
         rewrite_result = await run_rewrite(
             RewriteRequest(transcript=transcript.text, date=date, title_hint=title_hint)
         )
-        return ProcessResult(transcript=transcript, rewrite=rewrite_result)
+        return ProcessResult(transcript=transcript, diary=rewrite_result)
 
     return api
 
