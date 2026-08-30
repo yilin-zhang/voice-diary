@@ -57,9 +57,7 @@ def test_streaming_rewrite_returns_sse_result(tmp_path: Path) -> None:
     assert json.loads(event.removeprefix("data: "))["diary"].endswith("今天散步了。")
 
 
-def test_process_stream_sends_checkpoint_then_diary_and_cleans_up(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_process_stream_sends_checkpoint_and_cleans_up(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("voice_diary.app.split_audio", lambda source, target, seconds: [source])
     app = create_app(
         settings=Settings(temp_dir=tmp_path, asr_chunk_seconds=60),
@@ -74,14 +72,14 @@ def test_process_stream_sends_checkpoint_then_diary_and_cleans_up(
         )
 
     assert response.status_code == 200
-    assert response.text.index("event: transcript") < response.text.index("event: diary")
+    assert "event: transcript" in response.text
+    assert "event: diary" not in response.text
     data = [
         json.loads(line.removeprefix("data: "))
         for line in response.text.splitlines()
         if line.startswith("data: ")
     ]
     assert data[0]["chunks"][0]["offset_seconds"] == 0
-    assert data[-1]["diary"].startswith("# 2026-08-28")
     assert list(tmp_path.iterdir()) == []
 
 

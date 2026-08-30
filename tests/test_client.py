@@ -73,11 +73,16 @@ def test_process_file_keeps_all_results_local(tmp_path: Path, monkeypatch) -> No
                     "chunks": [{"text": "嗯，今天散步了。", "chunk_index": 0}],
                 }
             )
-            or {
-                "diary": "# 今天\n\n今天散步了。",
-                "uncertainties": [],
-            }
+            or "嗯，今天散步了。"
         ),
+    )
+    monkeypatch.setattr(
+        client_module,
+        "_rewrite_with_one_retry",
+        lambda *args, **kwargs: {
+            "diary": "# 今天\n\n今天散步了。",
+            "uncertainties": [],
+        },
     )
 
     output = client_module.process_file(

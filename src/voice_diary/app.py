@@ -211,7 +211,7 @@ def create_app(
     ) -> StreamingResponse:
         async def run_pipeline(
             queue: asyncio.Queue[tuple[str, dict[str, Any]]],
-        ) -> DiaryResult:
+        ) -> None:
             require_models()
             try:
                 async with private_upload(
@@ -251,12 +251,6 @@ def create_app(
                     {"text": full_transcript, "chunks": transcripts},
                 )
             )
-            return await asyncio.to_thread(
-                models.rewrite,
-                full_transcript,
-                date=date,
-                title_hint=title_hint,
-            )
 
         async def events():  # type: ignore[no-untyped-def]
             queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
@@ -274,11 +268,9 @@ def create_app(
                 yield stream_event(event, payload)
 
             try:
-                result = task.result()
+                task.result()
             except Exception as exc:
                 yield stream_error(exc)
-                return
-            yield stream_event("diary", result.model_dump())
 
         return StreamingResponse(
             events(),

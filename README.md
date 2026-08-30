@@ -9,7 +9,8 @@ request file.
 
 ```text
 local memo -> one compressed upload -> ephemeral Runpod worker -> 60s ASR chunks
-           <- transcript checkpoint, then diary <- direct SSE response
+           <- transcript checkpoint <- ASR SSE response
+           -> transcript rewrite -> diary <- separate SSE response
 ```
 
 The worker has no database, S3 integration, or network volume. Uploads use random names in
@@ -48,8 +49,9 @@ be enabled on the production endpoint.
 
 The client compresses the memo once to mono 16 kHz AAC and uploads it once. The worker
 temporarily splits it into 60-second mono 16 kHz PCM WAV chunks for sequential ASR. The
-transcript is streamed back and saved locally before diary generation begins. If the
-connection drops afterward, the client retries only the diary rewrite once.
+transcript is streamed back and saved locally before a separate diary request begins. This
+keeps both requests below the load-balancer deadline. If the rewrite connection drops, the
+client retries only that rewrite once.
 
 ```bash
 export VOICE_DIARY_ENDPOINT_URL="https://ENDPOINT_ID.api.runpod.ai"

@@ -137,7 +137,7 @@ def _process_stream(
     date: str | None,
     title_hint: str | None,
     save_transcript: Callable[[dict[str, Any]], None],
-) -> dict[str, Any]:
+) -> str:
     timeout = httpx.Timeout(connect=30, read=None, write=120, pool=30)
     with (
         audio.open("rb") as stream,
@@ -162,9 +162,10 @@ def _process_stream(
                 raise ClientError("voice processing failed")
             if event == "transcript":
                 save_transcript(payload)
-            elif event == "diary":
-                return payload
-    raise StreamEnded("processing stream ended without a diary")
+                text = payload.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+    raise StreamEnded("processing stream ended without a transcript")
 
 
 def _rewrite(
@@ -303,7 +304,7 @@ def process_file(
                 wait_until_ready(client, base_url, headers)
                 for attempt in range(2):
                     try:
-                        diary = _process_stream(
+                        full_transcript = _process_stream(
                             client,
                             base_url,
                             headers,
@@ -312,6 +313,14 @@ def process_file(
                             date=date,
                             title_hint=title_hint,
                             save_transcript=save_transcript,
+                        )
+                        diary = _rewrite_with_one_retry(
+                            client,
+                            base_url,
+                            headers,
+                            full_transcript,
+                            date=date,
+                            title_hint=title_hint,
                         )
                         break
                     except Exception as exc:
